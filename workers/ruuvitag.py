@@ -54,17 +54,13 @@ _LOGGER = logger.get(__name__)
 
 class RuuvitagWorker(BaseWorker):
     def _setup(self):
-        from ruuvitag_sensor.ruuvitag import RuuviTag
-
         _LOGGER.info("Adding %d %s devices", len(self.devices), repr(self))
-        for name, mac in self.devices.items():
-            _LOGGER.debug("Adding %s device '%s' (%s)", repr(self), name, mac)
-            self.devices[name] = RuuviTag(mac)
+        self.device_names = {mac: name for name, mac in self.devices.items()}
 
     def config(self, availability_topic):
         ret = []
-        for name, device in self.devices.items():
-            ret.extend(self.config_device(name, device.mac))
+        for name, mac in self.devices.items():
+            ret.extend(self.config_device(name, mac))
         return ret
 
     def config_device(self, name, mac):
@@ -110,30 +106,17 @@ class RuuvitagWorker(BaseWorker):
 
         return ret
 
-    def status_update(self):
-        from bluepy import btle
+    def run(self, mqtt):
+        def receive_ruuvitag_data(data):
+            mac, values = data
+            name = self.device_names[mac]
+            _LOGGER.info("Updating %s '%s'", repr(self), name)
+            mqtt.publish(self.update_device_state(name, values))
 
-        ret = []
-        _LOGGER.info("Updating %d %s devices", len(self.devices), repr(self))
-        for name, device in self.devices.items():
-            _LOGGER.debug("Updating %s device '%s' (%s)", repr(self), name, device.mac)
-            try:
-                ret.extend(self.update_device_state(name, device))
-            except btle.BTLEException as e:
-                logger.log_exception(
-                    _LOGGER,
-                    "Error during update of %s device '%s' (%s): %s",
-                    repr(self),
-                    name,
-                    device.mac,
-                    type(e).__name__,
-                    suppress=True,
-                )
-        return ret
+        from ruuvitag_sensor.ruuvi import RuuviTagSensor
+        RuuviTagSensor.get_data(receive_ruuvitag_data, self.devices.values())
 
-    def update_device_state(self, name, device):
-        values = device.update()
-
+    def update_device_state(self, name, values):
         ret = []
         for attr, device_class, _ in ATTR_CONFIG:
             try:
