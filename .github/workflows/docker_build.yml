@@ -28,6 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     #if: github.ref == 'refs/heads/master'
     # needs: test_build
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: checkout code
         uses: actions/checkout@v2
