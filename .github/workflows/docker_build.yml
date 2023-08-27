@@ -54,7 +54,7 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
           tags: |
-            ${{ github.actor }}/bt-mqtt-gateway:${{ github.sha }}
-            ${{ github.actor }}/bt-mqtt-gateway:latest
+            ghcr.io/${{ github.actor }}/bt-mqtt-gateway:${{ github.sha }}
+            ghcr.io/${{ github.actor }}/bt-mqtt-gateway:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
