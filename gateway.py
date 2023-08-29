@@ -15,6 +15,9 @@ logger.setup()
 import logging
 import argparse
 import queue
+import threading
+import os
+import signal
 
 import workers_requirements
 from workers_queue import _WORKERS_QUEUE
@@ -82,6 +85,17 @@ mqtt = MqttClient(settings["mqtt"])
 manager = WorkersManager(settings["manager"], mqtt)
 manager.register_workers(global_topic_prefix)
 manager.start()
+
+# Catch when a worker thread exits due of an error and terminate the gateway,
+# this allows restart of the service to occur.
+# TODO: Handle thread exit in workers_manager somehow
+def raise_exception(args):
+    sys.excepthook(args.exc_type, args.exc_value, args.exc_traceback)
+    # sys.exit() would be better here, but ruuvitag-sensor has a subprocess
+    # running that will prevent gateway script from exiting, thus use kill
+    # command to terminate both processes
+    os.kill(os.getpid(), signal.SIGTERM)
+threading.excepthook = raise_exception
 
 running = True
 

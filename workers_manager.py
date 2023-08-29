@@ -158,7 +158,7 @@ class WorkersManager:
         self._scheduler.start()
         self.update_all()
         for daemon in self._daemons:
-            threading.Thread(target=daemon.run, args=[self._mqtt], daemon=True).start()
+            threading.Thread(target=daemon.run, args=[self._mqtt], daemon=False).start()
 
     def _queue_if_matching_payload(self, command, payload, expected_payload):
         if payload.decode("utf-8") == expected_payload:

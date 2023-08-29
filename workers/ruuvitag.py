@@ -3,8 +3,15 @@ from workers.base import BaseWorker
 
 import logger
 
+import asyncio
+import os
+import time
 
-REQUIREMENTS = ["ruuvitag_sensor"]
+
+# Use Bleak backend for ruuvitag_sensor
+os.environ['RUUVI_BLE_ADAPTER'] = 'bleak'
+
+REQUIREMENTS = ["bleak", "ruuvitag_sensor"]
 
 # Supports all attributes of Data Format 2, 3, 4 and 5 of the RuuviTag.
 # See https://github.com/ruuvi/ruuvi-sensor-protocols for the sensor protocols.
@@ -56,6 +63,8 @@ class RuuvitagWorker(BaseWorker):
     def _setup(self):
         _LOGGER.info("Adding %d %s devices", len(self.devices), repr(self))
         self.device_names = {mac: name for name, mac in self.devices.items()}
+        if not hasattr(self, "no_data_timeout"):
+            self.no_data_timeout = None
 
     def config(self, availability_topic):
         ret = []
@@ -107,19 +116,82 @@ class RuuvitagWorker(BaseWorker):
         return ret
 
     def run(self, mqtt):
-        def receive_ruuvitag_data(data):
-            mac, values = data
-            name = self.device_names[mac]
-            _LOGGER.info("Updating %s '%s'", repr(self), name)
-            mqtt.publish(self.update_device_state(name, values))
+        async def async_run():
+            self.last_update = time.time()
+            await asyncio.gather(
+                update_sensors(),
+                raise_on_interface_down(),
+                raise_on_no_data_timeout()
+            )
 
-        from ruuvitag_sensor.ruuvi import RuuviTagSensor
-        RuuviTagSensor.get_data(receive_ruuvitag_data, self.devices.values())
+        async def update_sensors():
+            """
+            Query ruuvitag scans and publish them to MQTT.
+            """
+            try:
+                from ruuvitag_sensor.ruuvi import RuuviTagSensor
+
+                async for data in RuuviTagSensor.get_data_async(self.devices.values()):
+                    mac, values = data
+                    name = self.device_names[mac]
+                    self.last_update = time.time()
+                    _LOGGER.info("Updating %s '%s'", repr(self), name)
+                    mqtt.publish(self.update_device_state(name, values))
+            except Exception as e:
+                self.log_unspecified_exception(_LOGGER, name, e)
+                raise e
+            else:
+                raise RuntimeError("Ruuvitag updater has exited unexpectedly")
+
+        async def raise_on_interface_down():
+            """
+            Bluetooth interface may go down while scan is running. Reason is
+            unknown, happens with raspberry pi 3b+ with external bt dongle.
+            This function raises error when the interface is down.
+            """
+            while True:
+                await asyncio.sleep(60)
+                if "UP RUNNING" not in (await run_command("hciconfig", "hci0")):
+                    raise RuntimeError("Bluetooth interface has gone down")
+
+        async def run_command(*args):
+            """
+            Run system command with given arguments. Returns stdout/stderr as
+            a string.
+            """
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT
+            )
+            out, _ = await proc.communicate()
+            return out.decode('utf8')
+
+        async def raise_on_no_data_timeout():
+            """
+            Bluetooth stack may go in a state where interface is up and
+            running, but no scans are received. Reason is unknown, happens
+            with raspberry pi 3b+. This function raises error if no scans
+            were received within configured timeout.
+            """
+            if self.no_data_timeout is None:
+                return
+            while (self.last_update + self.no_data_timeout) > time.time():
+                await asyncio.sleep(1)
+            raise RuntimeError("Timeout waiting for ruuvitag data")
+
+        asyncio.run(async_run())
+
 
     def update_device_state(self, name, values):
         ret = []
         for attr, device_class, _ in ATTR_CONFIG:
             try:
+                # Do not sent None values, as they may cause parsing errors at
+                # receiving clients, this happens with Ruuvitag Pro which
+                # doesn't have humidity or pressure sensors
+                if values[attr] is None:
+                    continue
                 ret.append(
                     MqttMessage(
                         topic=self.format_topic(name, device_class),
